@@ -47,7 +47,6 @@ sqs = boto3.client('sqs',
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     region_name=AWS_REGION)
-queue_url = f"{SQS_QUEUE_URL}/celery"
 
 BUCKET_NAME = "gazai"
 s3 = boto3.client(
@@ -1139,7 +1138,7 @@ def main():
     while True:
         # Receive message from SQS queue
         response = sqs.receive_message(
-            QueueUrl=queue_url,
+            QueueUrl=SQS_QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20
         )
@@ -1152,7 +1151,7 @@ def main():
 
                     # Delete the message from the queue
                     sqs.delete_message(
-                        QueueUrl=queue_url,
+                        QueueUrl=SQS_QUEUE_URL,
                         ReceiptHandle=message['ReceiptHandle']
                     )
                 except Exception as e:
