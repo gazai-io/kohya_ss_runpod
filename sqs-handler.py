@@ -6,11 +6,11 @@ from typing import List
 import boto3
 from dotenv import load_dotenv
 import toml
+import time
+import json
 
-from kohya_ss.celery_app import app
-
-from kohya_ss.kohya_gui import dreambooth_folder_creation_gui
-from kohya_ss.kohya_gui.common_gui import (
+from kohya_gui import dreambooth_folder_creation_gui
+from kohya_gui.common_gui import (
     check_if_model_exist,
     get_executable_path,
     output_message,
@@ -25,21 +25,30 @@ from kohya_ss.kohya_gui.common_gui import (
     validate_args_setting,
     setup_environment,
 )
-from kohya_ss.kohya_gui.class_accelerate_launch import AccelerateLaunch
-from kohya_ss.kohya_gui.class_command_executor import CommandExecutor
-from kohya_ss.kohya_gui.class_sample_images import create_prompt_file
+from kohya_gui.class_accelerate_launch import AccelerateLaunch
+from kohya_gui.class_command_executor import CommandExecutor
+from kohya_gui.class_sample_images import create_prompt_file
 
-from kohya_ss.kohya_gui.custom_logging import setup_logging
+from kohya_gui.custom_logging import setup_logging
 
-from .models import Image, LoraModelStatus, LoraModel
-from .database import SessionLocal
+from app.models import Image, LoraModelStatus, LoraModel
+from app.database import SessionLocal
 
 load_dotenv()
 
-PROJECT_DIR = "/workspace/data"
+PROJECT_DIR = os.environ.get("PROJECT_DIR")
 
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.environ.get("AWS_REGION")
+
+SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL")
+sqs = boto3.client('sqs',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION)
+queue_url = f"{SQS_QUEUE_URL}/celery"
+
 BUCKET_NAME = "gazai"
 s3 = boto3.client(
     "s3",
@@ -889,8 +898,7 @@ def _train_model(
         log.info(f"Training completed ...")
 
 
-@app.task(name="train_lora_model")
-def train_lora_model(model_data: dict):  # Model data as a dictionary
+def train_lora_model(model_data: dict):
     print("train_lora_model task started...")
 
     try:
@@ -907,6 +915,7 @@ def train_lora_model(model_data: dict):  # Model data as a dictionary
 
             # 3. Perform the actual model training
             training_dir_output = os.path.join(model_root_dir, "output")
+            os.makedirs(training_dir_output, exist_ok=True)
             _folder_preparation(
                 user_id=db_model.userId,
                 model_id=db_model.id,
@@ -1116,3 +1125,41 @@ def train_lora_model(model_data: dict):  # Model data as a dictionary
     finally:
         database.close()
         shutil.rmtree(model_root_dir)
+
+
+def process_message(message):
+    # Parse the message payload
+    payload = json.loads(message['Body'])
+
+    # Execute the LoRA training script
+    train_lora_model(payload)
+
+def main():
+    print("Listening for messages...")
+    while True:
+        # Receive message from SQS queue
+        response = sqs.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=20
+        )
+
+        # Check if a message was received
+        if 'Messages' in response:
+            for message in response['Messages']:
+                try:
+                    process_message(message)
+
+                    # Delete the message from the queue
+                    sqs.delete_message(
+                        QueueUrl=queue_url,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                except Exception as e:
+                    print(f"Error processing message: {e}")
+
+        # Optional: Add a small delay to avoid excessive polling
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
