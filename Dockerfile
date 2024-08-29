@@ -74,7 +74,7 @@ RUN --mount=type=cache,id=uv-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/ro
     uv venv --system-site-packages /venv && \
     uv pip install --no-deps \
     # torch (866.2MiB)
-    torch==2.5.1+cu124 \ 
+    torch==2.5.1+cu124 \
     # triton (199.8MiB)
     triton==3.1.0 \
     # tensorflow (615.0MiB)
@@ -119,6 +119,12 @@ RUN --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/v
 RUN ln -s /usr/lib/x86_64-linux-gnu/libnvinfer.so /usr/lib/x86_64-linux-gnu/libnvinfer.so.7 && \
     ln -s /usr/lib/x86_64-linux-gnu/libnvinfer_plugin.so /usr/lib/x86_64-linux-gnu/libnvinfer_plugin.so.7
 
+# Allow runpod ssh
+RUN --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/var/cache/apt \
+    --mount=type=cache,id=aptlists-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/var/lib/apt/lists \
+    apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends openssh-server
+
 # Create user
 ARG UID
 RUN groupadd -g $UID $UID && \
@@ -153,16 +159,28 @@ WORKDIR /app
 
 VOLUME [ "/dataset" ]
 
+# Copy the entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+
+# Make the entrypoint script executable
+RUN chmod +x /app/entrypoint.sh
+
 # 7860: Kohya GUI
-EXPOSE 7860
+# EXPOSE 7860
+# 8000: fast API
+EXPOSE 8000
 
 USER $UID
 
 STOPSIGNAL SIGINT
 
 # Use dumb-init as PID 1 to handle signals properly
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["python3", "kohya_gui.py", "--listen", "0.0.0.0", "--server_port", "7860", "--headless", "--noverify"]
+# ENTRYPOINT ["dumb-init", "--"]
+# CMD ["python3", "kohya_gui.py", "--listen", "0.0.0.0", "--server_port", "7860", "--headless", "--noverify"]
+
+# Set the entrypoint to the shell script
+ENTRYPOINT ["dumb-init", "--", "/app/entrypoint.sh"]
+
 
 ARG VERSION
 ARG RELEASE
