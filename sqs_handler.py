@@ -908,7 +908,7 @@ def _train_model(
 
 
 def train_lora_model(model_data: dict):
-    print("train_lora_model task started...")
+    logging.info("train_lora_model task started...")
 
     try:
         # 1. Load the model from the database
@@ -1129,7 +1129,7 @@ def train_lora_model(model_data: dict):
         if db_model:
             db_model.status = LoraModelStatus.ERROR
             database.commit()
-        print(f"Error during training: {e}")
+        logging.error(f"Error during training: {e}")
 
     finally:
         database.close()
@@ -1145,7 +1145,7 @@ def process_message(message):
 
 
 def main():
-    print("Listening for messages...")
+    logging.info("Listening for messages...")
     while True:
         # Receive message from SQS queue
         response = sqs.receive_message(
@@ -1163,7 +1163,7 @@ def main():
                         QueueUrl=SQS_QUEUE_URL, ReceiptHandle=message["ReceiptHandle"]
                     )
                 except Exception as e:
-                    print(f"Error processing message: {e}")
+                    logging.error(f"Error processing message: {e}")
 
         # Optional: Add a small delay to avoid excessive polling
         time.sleep(1)
