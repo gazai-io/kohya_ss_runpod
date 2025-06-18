@@ -403,6 +403,7 @@ def train_lora_model(model_data: dict):
         db_lora_model.error = None # Clear previous errors
         db_lora_model.trainingParameters = config_toml_data
         db_lora_model.trainingStartedAt = datetime.now()
+        db_lora_model.trainingEndedAt = None
         database.commit()
 
         global executor

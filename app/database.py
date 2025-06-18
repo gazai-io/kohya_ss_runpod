@@ -26,7 +26,8 @@ def create_db_engine(max_retries=5, initial_backoff=1):
                 pool_size=5,  # Adjust based on your needs
                 max_overflow=10,
                 pool_timeout=30,  # Connection pool timeout
-                pool_recycle=1800,  # Recycle connections after 30 minutes
+                pool_recycle=600,  # Recycle connections every 10 minutes
+                pool_pre_ping=True,  # Check connection before use
             )
             engine.connect()
             return engine
