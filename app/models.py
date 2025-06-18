@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import List
 from sqlalchemy import Column, DateTime, ForeignKey, String, Enum, Table
-from sqlalchemy.orm import declarative_base, relationship, Mapped
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship, Mapped
 from enum import Enum as PyEnum
 
 from sqlalchemy_serializer import SerializerMixin
@@ -30,9 +31,6 @@ class Image(Base):
     id = Column(String, primary_key=True)
     objectKey = Column(String)
     fileName = Column(String)
-    caption = Column(String, nullable=True)
-    userId = Column(String)
-    createdAt = Column(DateTime, default=datetime.now)
 
     training_images: Mapped[List["TrainingImage"]] = relationship("TrainingImage", back_populates="image")
 
@@ -63,9 +61,14 @@ class LoraModel(Base, SerializerMixin):
     status = Column(
         Enum(LoraModelStatus), default=LoraModelStatus.PENDING, nullable=False
     )
+    error = Column(String, nullable=True)
+    trainingParameters = Column(JSONB, nullable=True)
+    trainingStartedAt = Column(DateTime, nullable=True)
+    trainingEndedAt = Column(DateTime, nullable=True)
 
     userId = Column(String)
     createdAt = Column(DateTime, default=datetime.now)
+    updatedAt = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
     trainingImages: Mapped[List[TrainingImage]] = relationship(secondary=lora_model_training_image_table)

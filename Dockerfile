@@ -99,6 +99,16 @@ RUN --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/v
     CC="cc -mavx2" uv pip install pillow-simd; \
     fi
 
+
+# Install additional Python packages for the application
+RUN uv pip install --no-cache-dir \
+    boto3==1.34.103 \
+    fastapi[standard]>=0.115.2 \
+    psycopg2-binary==2.9.9 \
+    python-dotenv==1.0.1 \
+    SQLAlchemy==2.0.30 \
+    SQLAlchemy-serializer==1.4.12
+
 ########################################
 # Final stage
 ########################################
