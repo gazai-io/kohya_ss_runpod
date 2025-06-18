@@ -231,6 +231,7 @@ def prepare_training_config_and_command(
         gpu_ids="",
         main_process_port=0,
         num_cpu_threads_per_process=2,
+        mixed_precision="bf16" if network_type == 'flux1' or network_type == 'sd3' else "fp16",
         extra_accelerate_launch_args="",
     )
 
@@ -285,7 +286,7 @@ def prepare_training_config_and_command(
         "save_every_n_epochs": 2,
         "seed": int(seed) if int(seed) != 0 else None,
 
-        "mixed_precision": "bf16" if network_type == 'flux1' or network_type == 'sd3' else "fp16",
+
         "save_precision": "fp16",
         "network_train_unet_only": True if network_type == 'flux1' or network_type == 'sd3' else False,
         "vae": AE_PATH if network_type == 'flux1' else None,
@@ -418,11 +419,48 @@ def train_lora_model(model_data: dict):
             database.commit()
             return
 
+        # Store model ID before closing session and detaching db_lora_model
+        # db_lora_model here is the instance from the session we are about to close.
+        # model_data['id'] is from the input message.
+        model_id_to_refetch = None
+        if db_lora_model:
+            model_id_to_refetch = db_lora_model.id
+        elif "id" in model_data:
+            model_id_to_refetch = model_data["id"]
+
+        # Close database connection before long-running command
+        log.info("Closing database connection before executing training command.")
+        if database:
+            database.close()
+            database = None # Mark session as closed
+
         # Run the command
         executor.execute_command(run_cmd=run_cmd, env=env)
-        executor.wait_for_training_to_end()
+        executor.wait_for_training_to_end() # This might raise an exception if training fails
 
-        log.info("Training completed ...")
+        # Re-open database connection and re-fetch the model object
+        log.info("Training command finished. Re-opening database connection.")
+        database = SessionLocal() # Assign to the main 'database' variable
+
+        if not model_id_to_refetch:
+            log.critical("Cannot determine model ID to re-fetch LoraModel. Aborting further database operations.")
+            # This will likely lead to an error handled by the main except block or a direct failure.
+            raise ValueError("Model ID not available for re-fetching LoraModel after command execution.")
+
+        # Re-assign db_lora_model to the instance from the new session
+        db_lora_model = (
+            database.query(LoraModel).filter_by(id=model_id_to_refetch).first()
+        )
+
+        if not db_lora_model:
+            log.error(
+                f"LoraModel with id {model_id_to_refetch} not found after re-opening database. Cannot update status."
+            )
+            # This is a critical error. Subsequent access to db_lora_model attributes will raise AttributeError.
+            # This will be caught by the (modified) general except block, which will attempt to set ERROR status.
+            raise LookupError(f"Failed to re-fetch LoraModel with id {model_id_to_refetch} after command execution.")
+
+        log.info("Training completed ...") # Log success after command and successful re-fetch
 
         # Update the status to "ready"
         model_output_dir = os.path.join(training_dir_output, "model")
@@ -507,14 +545,55 @@ def train_lora_model(model_data: dict):
 
     except Exception as e:
         log.error(f"Error during training: {e}", exc_info=True)
-        if database: # Check if session was opened
-            database.rollback()
-        if db_lora_model: # Check if model was fetched
-            db_lora_model.status = LoraModelStatus.ERROR
-            db_lora_model.error = str(e)
-            db_lora_model.trainingEndedAt = datetime.now()
-            if database: # Check if session is still usable for commit
-                database.commit()
+        # Attempt to update the model status to ERROR using a new, dedicated database session.
+        # This ensures that even if the main 'database' session (from the try block)
+        # was closed or is in an unusable state, we make a best effort to record the error.
+        error_update_session: Optional[Session] = None
+        try:
+            # Determine the model ID for error updating.
+            # model_data['id'] is the most reliable source from the input message.
+            # db_lora_model (if it exists) might be a detached instance or None.
+            lora_model_id_for_error = model_data.get("id")
+
+            # Fallback if model_data.get("id") is None for some reason, but we had an instance.
+            # This 'db_lora_model' is the one from the outer scope.
+            if not lora_model_id_for_error and db_lora_model:
+                try:
+                    # Accessing .id on a detached instance is usually safe for simple attributes.
+                    lora_model_id_for_error = db_lora_model.id
+                except Exception as id_access_exc:
+                    log.warning(f"Could not access .id from db_lora_model instance: {id_access_exc}")
+
+
+            if lora_model_id_for_error:
+                log.info(f"Attempting to update LoraModel {lora_model_id_for_error} to ERROR status.")
+                error_update_session = SessionLocal()
+                model_to_update_error_status = (
+                    error_update_session.query(LoraModel)
+                    .filter_by(id=lora_model_id_for_error)
+                    .first()
+                )
+                if model_to_update_error_status:
+                    model_to_update_error_status.status = LoraModelStatus.ERROR
+                    model_to_update_error_status.error = str(e) # Record the original error 'e'
+                    model_to_update_error_status.trainingEndedAt = datetime.now()
+                    error_update_session.commit()
+                    log.info(f"Successfully updated LoraModel {lora_model_id_for_error} to ERROR status.")
+                else:
+                    log.error(
+                        f"Could not find LoraModel with id {lora_model_id_for_error} in database to update its error status."
+                    )
+            else:
+                log.error(
+                    "Could not determine LoraModel ID. Unable to update status to ERROR in database."
+                )
+        except Exception as inner_exception_during_error_handling:
+            log.error(f"Further error occurred while trying to update LoraModel status to ERROR: {inner_exception_during_error_handling}", exc_info=True)
+            if error_update_session:
+                error_update_session.rollback() # Rollback any partial changes in the error session
+        finally:
+            if error_update_session:
+                error_update_session.close() # Ensure the error session is closed
     finally:
         if database:
             database.close()
