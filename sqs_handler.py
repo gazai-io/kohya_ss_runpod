@@ -1,8 +1,6 @@
 from datetime import datetime
-import logging
 import os
 import shutil
-import sys
 from typing import List, Optional
 import boto3
 from dotenv import load_dotenv
@@ -22,9 +20,13 @@ from kohya_gui.common_gui import (
 )
 from kohya_gui.class_accelerate_launch import AccelerateLaunch
 from kohya_gui.class_command_executor import CommandExecutor
+from kohya_gui.custom_logging import setup_logging
 
 from app.models import Image, LoraModelStatus, LoraModel
 from app.database import SessionLocal
+
+# Set up log
+log = setup_logging()
 
 load_dotenv()
 
@@ -58,13 +60,6 @@ s3 = boto3.client(
 )
 
 
-# Set up logging
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
 # Setup command executor
 executor = None
 
@@ -90,7 +85,7 @@ def _folder_preparation(
         )
 
         s3.download_file(BUCKET_NAME, object_key, local_img_file_path)
-        logging.info(f"Downloaded {object_key} to {local_img_file_path}...")
+        log.info(f"Downloaded {object_key} to {local_img_file_path}...")
 
         if training_image.caption is not None and training_image.caption != "":
             local_caption_file_path = os.path.join(
@@ -98,7 +93,7 @@ def _folder_preparation(
             )
             with open(local_caption_file_path, "a") as file:
                 file.write(f"{training_image.caption}")
-            logging.info(
+            log.info(
                 f"Wrote {training_image.caption} to {local_caption_file_path}..."
             )
 
@@ -145,14 +140,14 @@ def prepare_training_config_and_command(
         training_dir_output=training_dir_output,
     )
 
-    logging_dir = os.path.join(training_dir_output, "log")
+    log_dir = os.path.join(training_dir_output, "log")
     training_images_dir_input = os.path.join(training_dir_output, "img")
     model_output_dir = os.path.join(training_dir_output, "model")
     if not os.path.exists(model_output_dir):
         os.makedirs(model_output_dir)
 
     if not validate_folder_path(
-        logging_dir, can_be_written_to=True, create_if_not_exists=True
+        log_dir, can_be_written_to=True, create_if_not_exists=True
     ):
         return
 
@@ -169,7 +164,7 @@ def prepare_training_config_and_command(
     #
 
     if training_images_dir_input == "":
-        logging.error("Training images directory is empty")
+        log.error("Training images directory is empty")
         return
 
     # Get a list of all subfolders in train_data_dir
@@ -186,7 +181,7 @@ def prepare_training_config_and_command(
         try:
             # Extract the number of repeats from the folder name
             repeats = int(folder.split("_")[0])
-            logging.info(f"Folder {folder}: {repeats} repeats found")
+            log.info(f"Folder {folder}: {repeats} repeats found")
 
             # Count the number of images in the folder
             num_images = len(
@@ -200,26 +195,26 @@ def prepare_training_config_and_command(
                 ]
             )
 
-            logging.info(f"Folder {folder}: {num_images} images found")
+            log.info(f"Folder {folder}: {num_images} images found")
 
             # Calculate the total number of steps for this folder
             steps = repeats * num_images
 
             # log.info the result
-            logging.info(f"Folder {folder}: {num_images} * {repeats} = {steps} steps")
+            log.info(f"Folder {folder}: {num_images} * {repeats} = {steps} steps")
 
             total_steps += steps
 
         except ValueError:
             # Handle the case where the folder name does not contain an underscore
-            logging.info(
+            log.info(
                 f"Error: '{folder}' does not contain an underscore, skipping..."
             )
 
 
     accelerate_path = get_executable_path("accelerate")
     if accelerate_path == "":
-        logging.error("accelerate not found")
+        log.error("accelerate not found")
         return
 
     run_cmd = [rf"{accelerate_path}", "launch"]
@@ -279,7 +274,7 @@ def prepare_training_config_and_command(
         "text_encoder_lr": 0.00005,
         "save_model_as": "safetensors",
         "optimizer_type": "AdamW8bit",
-        "optimizer_args": "weight_decay=0.01 betas=0.9,0.999 eps=0.000001",
+        "optimizer_args": ["weight_decay=0.01", "betas=0.9,0.999", "eps=0.000001"],
         "lr_scheduler": "cosine_with_restarts",
         "max_token_length": int(150) if not network_type == 'flux1' else None,
         "network_module": network_module,
@@ -341,12 +336,12 @@ def prepare_training_config_and_command(
         toml.dump(config_toml_data, toml_file)
 
         if not os.path.exists(toml_file.name):
-            logging.error(f"Failed to write TOML file: {toml_file.name}")
+            log.error(f"Failed to write TOML file: {toml_file.name}")
 
     run_cmd.append("--config_file")
     run_cmd.append(rf"{tmpfilename}")
 
-    logging.info(run_cmd)
+    log.info(run_cmd)
     env = setup_environment()
 
 
@@ -354,7 +349,7 @@ def prepare_training_config_and_command(
 
 
 def train_lora_model(model_data: dict):
-    logging.info("train_lora_model task started...")
+    log.info("train_lora_model task started...")
     database: Optional[Session] = None
     db_lora_model: Optional[LoraModel] = None
     model_root_dir: Optional[str] = None
@@ -366,7 +361,7 @@ def train_lora_model(model_data: dict):
         )
 
         if not db_lora_model:
-            logging.error(f"LoraModel with id {model_data['id']} not found.")
+            log.error(f"LoraModel with id {model_data['id']} not found.")
             return
 
         model_root_dir = rf"{PROJECT_DIR}/{db_lora_model.userId}/{db_lora_model.id}"
@@ -414,7 +409,7 @@ def train_lora_model(model_data: dict):
             executor = CommandExecutor(headless=True)
 
         if executor.is_running():
-            logging.error(
+            log.error(
                 "Training is already running. Can't start another training session."
             )
             db_lora_model.status = LoraModelStatus.ERROR
@@ -427,7 +422,7 @@ def train_lora_model(model_data: dict):
         executor.execute_command(run_cmd=run_cmd, env=env)
         executor.wait_for_training_to_end()
 
-        logging.info("Training completed ...")
+        log.info("Training completed ...")
 
         # Update the status to "ready"
         model_output_dir = os.path.join(training_dir_output, "model")
@@ -442,7 +437,7 @@ def train_lora_model(model_data: dict):
         primary_model_to_copy = None
 
         if not safetensor_files:
-            logging.error("No safetensors model file found after training.")
+            log.error("No safetensors model file found after training.")
             db_lora_model.status = LoraModelStatus.ERROR
             db_lora_model.error = (
                 "Training finished but no model file was created."
@@ -459,12 +454,12 @@ def train_lora_model(model_data: dict):
             )
             s3.upload_file(model_file_path, BUCKET_NAME, object_key)
             uploaded_object_keys.append(object_key)
-            logging.info(f"Uploaded {filename} to S3.")
+            log.info(f"Uploaded {filename} to S3.")
 
         primary_model_filename = f"{db_lora_model.fileName}.{save_model_as}"
 
         if primary_model_filename not in safetensor_files:
-            logging.error(
+            log.error(
                 f"Primary model file {primary_model_filename} not found after training."
             )
             db_lora_model.status = LoraModelStatus.ERROR
@@ -498,9 +493,9 @@ def train_lora_model(model_data: dict):
                 LORA_DIR, f"{db_lora_model.fileName}.{save_model_as}"
             )
             shutil.copy(primary_model_to_copy, destination_path)
-            logging.info(f"Copied {primary_model_to_copy} to {destination_path}")
+            log.info(f"Copied {primary_model_to_copy} to {destination_path}")
         else:
-            logging.error(
+            log.error(
                 f"Could not find model file at {primary_model_to_copy} to copy."
             )
             db_lora_model.status = LoraModelStatus.ERROR
@@ -511,7 +506,7 @@ def train_lora_model(model_data: dict):
             return
 
     except Exception as e:
-        logging.error(f"Error during training: {e}", exc_info=True)
+        log.error(f"Error during training: {e}", exc_info=True)
         if database: # Check if session was opened
             database.rollback()
         if db_lora_model: # Check if model was fetched
@@ -525,7 +520,7 @@ def train_lora_model(model_data: dict):
             database.close()
         if model_root_dir and os.path.exists(model_root_dir):
             shutil.rmtree(model_root_dir)
-            logging.info(f"Cleaned up training directory: {model_root_dir}")
+            log.info(f"Cleaned up training directory: {model_root_dir}")
 
 
 def process_message(message):
@@ -537,7 +532,7 @@ def process_message(message):
 
 
 def main():
-    logging.info("Listening for messages...")
+    log.info("Listening for messages...")
     while True:
         # Receive message from SQS queue
         response = sqs.receive_message(
@@ -555,7 +550,7 @@ def main():
                         QueueUrl=SQS_QUEUE_URL, ReceiptHandle=message["ReceiptHandle"]
                     )
                 except Exception as e:
-                    logging.error(f"Error processing message: {e}")
+                    log.error(f"Error processing message: {e}")
 
         # Optional: Add a small delay to avoid excessive polling
         time.sleep(1)
